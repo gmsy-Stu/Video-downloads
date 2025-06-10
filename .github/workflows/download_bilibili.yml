@@ -1,0 +1,56 @@
+name: Download Bilibili Video to Repo
+
+on:
+  workflow_dispatch: # 允许您在 GitHub Actions 页面手动触发此工作流
+    inputs:
+      bilibili_url:
+        description: 'Bilibili 视频的完整 URL'
+        required: true
+        type: string
+
+jobs:
+  download_and_upload:
+    runs-on: ubuntu-latest # 在最新的 Ubuntu 运行环境中执行
+    permissions:
+      contents: write # 授予工作流写入仓库内容的权限，以便提交下载的视频
+
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+        with:
+          lfs: true # 确保在 Runner 环境中正确处理 Git LFS 文件
+
+      - name: 安装 yt-dlp
+        run: pip install yt-dlp
+
+      - name: 下载 Bilibili 视频
+        id: download_step # 设置步骤ID，以便后续步骤引用其输出
+        run: |
+          DOWNLOAD_DIR="bilibili_videos" # 视频将下载到仓库中的此目录
+          mkdir -p "$DOWNLOAD_DIR"
+
+          # 使用 yt-dlp 下载最佳质量的 MP4 视频和音频，并合并
+          # -o "$DOWNLOAD_DIR/%(title)s.%(ext)s" 会将视频保存到指定目录并以标题命名
+          yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]" --merge-output-format mp4 -o "$DOWNLOAD_DIR/%(title)s.%(ext)s" "${{ github.event.inputs.bilibili_url }}"
+
+          # 查找下载的 MP4 文件路径，以便传递给后续步骤
+          DOWNLOADED_FILE=$(find "$DOWNLOAD_DIR" -type f -name "*.mp4" -print -quit)
+          if [ -z "$DOWNLOADED_FILE" ]; then
+            echo "::error::未找到下载的 MP4 文件。"
+            exit 1
+          fi
+          echo "video_path=$DOWNLOADED_FILE" >> "$GITHUB_OUTPUT" # 将文件路径作为输出，供后续步骤使用
+
+      - name: 提交并推送到 GitHub 仓库
+        if: success() && steps.download_step.outputs.video_path # 确保视频下载成功
+        run: |
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action"
+
+          # Git LFS 会自动处理 *.mp4 文件（因为 .gitattributes 已经配置）
+          git add "${{ steps.download_step.outputs.video_path }}" # 添加下载的视频文件
+
+          # 提交更改。如果文件没有变化，commit 可能会失败，我们捕获错误并继续
+          git commit -m "添加 Bilibili 视频: ${{ github.event.inputs.bilibili_url }}" || echo "没有新的视频需要提交或提交失败。"
+
+          git push # 推送更改到仓库
